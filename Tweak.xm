@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <substrate.h>
 #import <objc/runtime.h>
+#import <UIKit/UIKit.h>
 
 static NSString *g_logPath;
 static NSFileHandle *g_logHandle;
@@ -20,27 +21,27 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.13.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.14.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.13 ===");
+    ypd_log(@"=== YPD v0.14 ===");
 }
 
 // ---- Phase 1: AWEIMNewMessageDataController ----
 
 static void hook_delMsg_sc(id self, SEL _cmd, id msg, BOOL send, id comp) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send:completion: send=%d", send);
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send:completion:");
 }
 static void hook_delMsg_ss(id self, SEL _cmd, id msg, BOOL send) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send: send=%d", send);
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send:");
 }
 static void hook_delMsgInMem(id self, SEL _cmd, id msg) {
     ypd_log(@"BLOCK | NewMsgDC | deleteMsgInMemory:");
 }
 static void hook_delMsgInMem_sr(id self, SEL _cmd, id msg, BOOL reload) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMsgInMemory:shouldReload: reload=%d", reload);
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsgInMemory:shouldReload:");
 }
 static void hook_batchDel(id self, SEL _cmd, id arr) {
     ypd_log(@"BLOCK | NewMsgDC | batchDeleteMsgIds: count=%lu", (unsigned long)[arr count]);
@@ -70,7 +71,6 @@ static void ypd_scan_void_delete() {
     Class *classes = objc_copyClassList(&classCount);
     NSMutableSet *hooked = [NSMutableSet set];
     NSUInteger voidCount = 0, classCount2 = 0;
-
     for (unsigned int i = 0; i < classCount; i++) {
         NSString *className = NSStringFromClass(classes[i]);
         if (!ypd_should_scan_class(className)) continue;
@@ -96,86 +96,83 @@ static void ypd_scan_void_delete() {
     ypd_log(@"SCAN | %lu classes, %lu void delete BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
 }
 
-// ---- Phase 3: wide probes (passthrough) ----
+// ---- Phase 3: DB snapshot & restore ----
 
-// TIMXECOMMessageInserter
+static NSString *g_backupDir;
+static NSString *g_imDir;
+static BOOL g_backupDone = NO;
+static BOOL g_restoring = NO;
 
-static void (*orig_syncCmd)(id, SEL, id, id, int, id, id);
-static void hook_syncCmd(id self, SEL _cmd, id msg, id inbox, int reason, id ctx, id cm) {
-    NSString *t = [msg respondsToSelector:@selector(serverMessageType)] 
-        ? [NSString stringWithFormat:@"%@", [msg performSelector:@selector(serverMessageType)]] : @"?";
-    ypd_log(@"PROBE | Inserter.syncHandleCommand msgType=%@ reason=%d", t, reason);
-    orig_syncCmd(self, _cmd, msg, inbox, reason, ctx, cm);
+static NSString *ypd_get_app_docs() {
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    return paths[0];
 }
 
-static void (*orig_handleCmd)(id, SEL, id, id, int, id);
-static void hook_handleCmd(id self, SEL _cmd, id msg, id inbox, int reason, id ctx) {
-    NSString *t = [msg respondsToSelector:@selector(serverMessageType)]
-        ? [NSString stringWithFormat:@"%@", [msg performSelector:@selector(serverMessageType)]] : @"?";
-    ypd_log(@"PROBE | Inserter.handleCommand msgType=%@ reason=%d", t, reason);
-    orig_handleCmd(self, _cmd, msg, inbox, reason, ctx);
-}
+static void ypd_backup_db() {
+    if (g_backupDone || g_restoring) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    // clean old backup
+    [fm removeItemAtPath:g_backupDir error:nil];
+    [fm createDirectoryAtPath:g_backupDir withIntermediateDirectories:YES attributes:nil error:nil];
 
-static void (*orig_syncInsert)(id, SEL, id, id, id, int, id);
-static void hook_syncInsert(id self, SEL _cmd, id msgs, id extra, id inbox, int reason, id ctx) {
-    ypd_log(@"PROBE | Inserter.syncInsertMessages reason=%d count=%lu", reason, (unsigned long)[msgs count]);
-    orig_syncInsert(self, _cmd, msgs, extra, inbox, reason, ctx);
-}
-
-// TIMXNewMessageStore
-
-static void (*orig_clearConv)(id, SEL, id, id, id);
-static void hook_clearConv(id self, SEL _cmd, id convId, id orderIdx, id comp) {
-    ypd_log(@"PROBE | Store.clearMessagesInConv convId=%@", convId);
-    orig_clearConv(self, _cmd, convId, orderIdx, comp);
-}
-
-static void (*orig_clearConv2)(id, SEL, id, id, id);
-static void hook_clearConv2(id self, SEL _cmd, id conv, id sortBlock, id comp) {
-    ypd_log(@"PROBE | Store.clearMessagesWithConv conv=%@", conv);
-    orig_clearConv2(self, _cmd, conv, sortBlock, comp);
-}
-
-static void (*orig_delByConvIds)(id, SEL, id, id);
-static void hook_delByConvIds(id self, SEL _cmd, id convIds, id comp) {
-    ypd_log(@"PROBE | Store.deleteMessagesByConvIds convCount=%lu", (unsigned long)[convIds count]);
-    orig_delByConvIds(self, _cmd, convIds, comp);
-}
-
-static void (*orig_delByMsgIds)(id, SEL, id, id);
-static void hook_delByMsgIds(id self, SEL _cmd, id msgIds, id comp) {
-    ypd_log(@"PROBE | Store.deleteMessagesByMsgIds msgCount=%lu", (unsigned long)[msgIds count]);
-    orig_delByMsgIds(self, _cmd, msgIds, comp);
-}
-
-static void ypd_hook_probes() {
-    Class inserter = NSClassFromString(@"TIMXECOMMessageInserter");
-    Class store = NSClassFromString(@"TIMXNewMessageStore");
-
-    if (inserter) {
-        MSHookMessageEx(inserter, NSSelectorFromString(@"syncHandleCommandMessage:inInbox:reason:context:countMap:"),
-                        (IMP)&hook_syncCmd, (IMP*)&orig_syncCmd);
-        MSHookMessageEx(inserter, NSSelectorFromString(@"handleCommandMessage:inInbox:reason:context:"),
-                        (IMP)&hook_handleCmd, (IMP*)&orig_handleCmd);
-        MSHookMessageEx(inserter, NSSelectorFromString(@"syncInsertMessages:conversationExtraMap:inInbox:reason:context:"),
-                        (IMP)&hook_syncInsert, (IMP*)&orig_syncInsert);
-        ypd_log(@"P3 | Inserter 3 probes OK");
-    } else {
-        ypd_log(@"P3 | Inserter NOT FOUND");
+    NSArray *files = [fm contentsOfDirectoryAtPath:g_imDir error:nil];
+    NSUInteger count = 0;
+    for (NSString *f in files) {
+        if (![f hasSuffix:@".sqlite"] && ![f hasSuffix:@"-wal"] && ![f hasSuffix:@"-shm"]) continue;
+        NSString *src = [g_imDir stringByAppendingPathComponent:f];
+        NSString *dst = [g_backupDir stringByAppendingPathComponent:f];
+        if ([fm copyItemAtPath:src toPath:dst error:nil]) count++;
     }
+    g_backupDone = YES;
+    ypd_log(@"BACKUP | %lu files to %@", (unsigned long)count, g_backupDir);
+}
 
-    if (store) {
-        MSHookMessageEx(store, NSSelectorFromString(@"clearMessagesInConversation:beforeOrderIndex:completion:"),
-                        (IMP)&hook_clearConv, (IMP*)&orig_clearConv);
-        MSHookMessageEx(store, NSSelectorFromString(@"clearMessagesWithConversation:calculateSortTimeBlock:completion:"),
-                        (IMP)&hook_clearConv2, (IMP*)&orig_clearConv2);
-        MSHookMessageEx(store, NSSelectorFromString(@"deleteMessagesByConvIds:completion:"),
-                        (IMP)&hook_delByConvIds, (IMP*)&orig_delByConvIds);
-        MSHookMessageEx(store, NSSelectorFromString(@"deleteMessagesByMsgIds:completion:"),
-                        (IMP)&hook_delByMsgIds, (IMP*)&orig_delByMsgIds);
-        ypd_log(@"P3 | Store 4 probes OK");
+static void ypd_restore_db() {
+    if (g_restoring) return;
+    g_restoring = YES;
+    ypd_log(@"RESTORE | restoring from %@", g_backupDir);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:g_backupDir error:nil];
+    NSUInteger count = 0;
+    for (NSString *f in files) {
+        NSString *src = [g_backupDir stringByAppendingPathComponent:f];
+        NSString *dst = [g_imDir stringByAppendingPathComponent:f];
+        [fm removeItemAtPath:dst error:nil];
+        if ([fm copyItemAtPath:src toPath:dst error:nil]) count++;
+    }
+    ypd_log(@"RESTORE | %lu files restored", (unsigned long)count);
+
+    // Reload conversations
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ypd_log(@"RESTORE | posting reload notification");
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ypdMessageReload" object:nil];
+        g_restoring = NO;
+        g_backupDone = NO;
+        // re-backup after restore
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ypd_backup_db();
+        });
+    });
+}
+
+// Hook handleDeleteConversationWithContext: trigger restore
+static void (*orig_handleDelConv)(id, SEL, id);
+
+static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
+    ypd_log(@"TRIGGER | handleDeleteConversationWithContext — starting restore");
+    // Block original
+    ypd_restore_db();
+}
+
+static void ypd_setup_restore_trigger() {
+    Class handler = NSClassFromString(@"TIMXCommandMessageHandler");
+    if (handler) {
+        MSHookMessageEx(handler, NSSelectorFromString(@"handleDeleteConversationWithContext:"),
+                        (IMP)&hook_handleDelConv, (IMP*)&orig_handleDelConv);
+        ypd_log(@"P3 | restore trigger HOOKED");
     } else {
-        ypd_log(@"P3 | Store NOT FOUND");
+        ypd_log(@"P3 | TIMXCommandMessageHandler NOT FOUND");
     }
 }
 
@@ -192,13 +189,22 @@ static void ypd_hook_probes() {
             MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessageInMemory:shouldReload:"), (IMP)&hook_delMsgInMem_sr, NULL);
             MSHookMessageEx(msgDC, NSSelectorFromString(@"batchDeleteMessageIds:"), (IMP)&hook_batchDel, NULL);
             ypd_log(@"P1 | NewMsgDC 5 hooks OK");
-        } else {
-            ypd_log(@"P1 | NewMsgDC NOT FOUND");
         }
 
         ypd_scan_void_delete();
-        ypd_hook_probes();
 
-        ypd_log(@"=== YPD v0.13 init complete ===");
+        // Phase 3: DB backup + restore
+        NSString *docs = ypd_get_app_docs();
+        g_imDir = [docs stringByAppendingPathComponent:@"TIMXSDKWorkplace/ChatFiles/99000829096"];
+        g_backupDir = [docs stringByAppendingPathComponent:@"ypd_db_backup"];
+
+        // Backup after 5s (give app time to load conversations)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            ypd_backup_db();
+        });
+
+        ypd_setup_restore_trigger();
+
+        ypd_log(@"=== YPD v0.14 init complete ===");
     }
 }
