@@ -1,39 +1,60 @@
-name: Build YukiPreventDelete
+name: build deb
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+    paths:
+      - '*.h'
+      - '*.m'
+      - '*.mm'
+      - '*.x'
+      - '*.xm'
+      - '*.c'
+      - '*.cc'
+      - '*.cpp'
+      - '*.s'
+      - '*.S'
+      - 'YukiPreventDelete.plist'
+      - 'control'
+      - 'Makefile'
+      - 'layout/**'
   workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-    - name: Setup Theos
-      run: |
-        git clone --depth 1 https://github.com/theos/theos.git ${{ runner.temp }}/theos
-        echo "THEOS=${{ runner.temp }}/theos" >> $GITHUB_ENV
+      - name: Prepare Theos
+        uses: huami1314/theos-action@main
 
-    - name: Install Dependencies
-      run: |
-        brew install dpkg ldid
+      - name: Setup GNU Make
+        run: |
+          echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
 
-    - name: Fix Perl Shebang
-      run: |
-        find "${{ runner.temp }}/theos" -type f -name "*.pl" -exec sed -i '' '1s|^#!.*/perl$|#!/usr/bin/perl|' {} \;
+      - name: Clean packages dir
+        run: rm -rf packages && mkdir -p packages
 
-    - name: Make Package
-      run: |
-        make clean package
-      env:
-        THEOS_PACKAGE_SCHEME: rootless
+      - name: Build Rootless
+        run: |
+          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
+          for f in packages/*.deb; do
+            [ -f "$f" ] && [[ "$f" != *"-root"*".deb" ]] && mv "$f" "${f%.deb}-rootless.deb"
+          done
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: YukiPreventDelete-deb
-        path: packages/*.deb
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: YukiPreventDelete
+          path: |
+            ${{ github.workspace }}/packages/*.deb
