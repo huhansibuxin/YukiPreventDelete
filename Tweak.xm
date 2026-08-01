@@ -139,7 +139,7 @@ static void ypd_clear_store_cache(id store) {
     if ([store respondsToSelector:closeSel]) {
         @try {
             // Try with current user ID or empty
-            [store performSelector:closeSel withObject:@(0) withObject:nil];
+            [store performSelector:closeSel withObject:@(99000829096) withObject:nil];
             ypd_log(@"CACHE | closeDatabaseForUser OK");
         } @catch (NSException *e) {
             ypd_log(@"CACHE | closeDatabaseForUser EXCEPTION: %@", e);
@@ -150,7 +150,7 @@ static void ypd_clear_store_cache(id store) {
     SEL setupSel = NSSelectorFromString(@"dbDouYin_setupDatabaseWithUserID:");
     if ([store respondsToSelector:setupSel]) {
         @try {
-            [store performSelector:setupSel withObject:@(0)];
+            [store performSelector:setupSel withObject:@(99000829096)];
             ypd_log(@"CACHE | setupDatabase OK");
         } @catch (NSException *e) {
             ypd_log(@"CACHE | setupDatabase EXCEPTION: %@", e);
