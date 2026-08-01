@@ -20,7 +20,7 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.20.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.27.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
@@ -212,6 +212,6 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
             ypd_log(@"P3 | trigger HOOKED");
         }
 
-        ypd_log(@"=== YPD v0.20 init complete ===");
+        ypd_log(@"=== YPD v0.27 init complete ===");
     }
 }
