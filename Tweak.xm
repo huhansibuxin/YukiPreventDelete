@@ -20,23 +20,12 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.10.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.11.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.10 ===");
-}
-
-static void ypd_dump_methods(Class cls, NSString *name) {
-    unsigned int count;
-    Method *methods = class_copyMethodList(cls, &count);
-    ypd_log(@"=== %@ methods (%u) ===", name, count);
-    for (unsigned int i = 0; i < count; i++) {
-        SEL sel = method_getName(methods[i]);
-        ypd_log(@"  %@", NSStringFromSelector(sel));
-    }
-    free(methods);
+    ypd_log(@"=== YPD v0.11 ===");
 }
 
 // ---- Phase 1: AWEIMNewMessageDataController ----
@@ -113,22 +102,31 @@ static void ypd_scan_void_delete() {
     ypd_log(@"SCAN | %lu classes, %lu void delete methods BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
 }
 
+// ---- Phase 3: Targeted clear/destroy blockers ----
+
+static void ypd_clearBlock(id self, SEL _cmd) {
+    ypd_log(@"BLOCK_P3 | %@ | %@", NSStringFromClass([self class]), NSStringFromSelector(_cmd));
+}
+
+static void ypd_hook_clear_method(Class cls, const char *selName) {
+    SEL sel = sel_getUid(selName);
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) {
+        ypd_log(@"P3 | %s.%s NOT FOUND", class_getName(cls), selName);
+        return;
+    }
+    const char *types = method_getTypeEncoding(m);
+    if (types[0] != 'v') {
+        ypd_log(@"P3 | %s.%s SKIP (non-void: %s)", class_getName(cls), selName, types);
+        return;
+    }
+    MSHookMessageEx(cls, sel, (IMP)&ypd_clearBlock, NULL);
+    ypd_log(@"P3 | %s.%s HOOKED", class_getName(cls), selName);
+}
+
 %ctor {
     @autoreleasepool {
         ypd_init_log();
-
-        // Dump key sync class methods
-        Class inserter = NSClassFromString(@"TIMXECOMMessageInserter");
-        if (inserter) ypd_dump_methods(inserter, @"TIMXECOMMessageInserter");
-        else ypd_log(@"TIMXECOMMessageInserter NOT FOUND");
-
-        Class nms = NSClassFromString(@"TIMXNewMessageStore");
-        if (nms) ypd_dump_methods(nms, @"TIMXNewMessageStore");
-        else ypd_log(@"TIMXNewMessageStore NOT FOUND");
-
-        Class cmdHandler = NSClassFromString(@"TIMXCommandMessageHandler");
-        if (cmdHandler) ypd_dump_methods(cmdHandler, @"TIMXCommandMessageHandler");
-        else ypd_log(@"TIMXCommandMessageHandler NOT FOUND");
 
         // Phase 1
         Class msgDC = NSClassFromString(@"AWEIMNewMessageDataController");
@@ -143,8 +141,23 @@ static void ypd_scan_void_delete() {
             ypd_log(@"P1 | NewMsgDC NOT FOUND");
         }
 
+        // Phase 2
         ypd_scan_void_delete();
 
-        ypd_log(@"=== YPD v0.10 init complete ===");
+        // Phase 3: clear / destroy methods (no "delete" in selector name)
+        Class cmdHandler = NSClassFromString(@"TIMXCommandMessageHandler");
+        if (cmdHandler) {
+            ypd_hook_clear_method(cmdHandler, "clearMessagesWithContext:");
+            ypd_hook_clear_method(cmdHandler, "clearMessageMarkReadWithContext:");
+            ypd_hook_clear_method(cmdHandler, "handleConversationDestoryWithContext:");
+        }
+
+        Class nms = NSClassFromString(@"TIMXNewMessageStore");
+        if (nms) {
+            ypd_hook_clear_method(nms, "clearMessagesInConversation:beforeOrderIndex:completion:");
+            ypd_hook_clear_method(nms, "clearMessagesWithConversation:calculateSortTimeBlock:completion:");
+        }
+
+        ypd_log(@"=== YPD v0.11 init complete ===");
     }
 }
