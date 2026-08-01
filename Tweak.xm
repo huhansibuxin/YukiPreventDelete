@@ -20,101 +20,62 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.7.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.9.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.7 diag ===");
+    ypd_log(@"=== YPD v0.9 ===");
 }
 
-// ---- Phase 1: AWEIMNewMessageDataController void delete (block) ----
+// ---- Phase 1: AWEIMNewMessageDataController ----
 
-static void hook_block_delMsg_sc(id self, SEL _cmd, id msg, BOOL send, id comp) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMessage:sendToServer:completion: send=%d", send);
+static void hook_delMsg_sc(id self, SEL _cmd, id msg, BOOL send, id comp) {
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send:completion: send=%d", send);
 }
-static void hook_block_delMsg_ss(id self, SEL _cmd, id msg, BOOL send) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMessage:sendToServer: send=%d", send);
+static void hook_delMsg_ss(id self, SEL _cmd, id msg, BOOL send) {
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsg:send: send=%d", send);
 }
-static void hook_block_delMsgInMem(id self, SEL _cmd, id msg) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMessageInMemory:");
+static void hook_delMsgInMem(id self, SEL _cmd, id msg) {
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsgInMemory:");
 }
-static void hook_block_delMsgInMem_sr(id self, SEL _cmd, id msg, BOOL reload) {
-    ypd_log(@"BLOCK | NewMsgDC | deleteMessageInMemory:shouldReload: reload=%d", reload);
+static void hook_delMsgInMem_sr(id self, SEL _cmd, id msg, BOOL reload) {
+    ypd_log(@"BLOCK | NewMsgDC | deleteMsgInMemory:shouldReload: reload=%d", reload);
 }
-static void hook_block_batchDel(id self, SEL _cmd, id arr) {
-    ypd_log(@"BLOCK | NewMsgDC | batchDeleteMessageIds: count=%lu", (unsigned long)[arr count]);
+static void hook_batchDel(id self, SEL _cmd, id arr) {
+    ypd_log(@"BLOCK | NewMsgDC | batchDeleteMsgIds: count=%lu", (unsigned long)[arr count]);
 }
 
-// ---- Phase 2: all void delete methods (block) ----
+// ---- Phase 2: void delete blocker (expanded filter) ----
 
 static void ypd_block_void(id self, SEL _cmd) {
     ypd_log(@"BLOCK | %@ | %@", NSStringFromClass([self class]), NSStringFromSelector(_cmd));
 }
 
-// ---- Diagnostic: log ALL method calls on key sync classes (PASSTHROUGH) ----
-
-@interface NSObject (YPDDiag)
-@end
-@implementation NSObject (YPDDiag)
-- (void)ypd_diag_log {
-    ypd_log(@"DIAG | %@ | %@", NSStringFromClass([self class]), NSStringFromSelector(_cmd));
+static BOOL ypd_should_scan_class(NSString *cn) {
+    if ([cn containsString:@"EIM"]) return YES;
+    if ([cn containsString:@"Message"]) return YES;
+    if ([cn containsString:@"Chat"]) return YES;
+    if ([cn containsString:@"FlowIM"]) return YES;
+    if ([cn containsString:@"TIMX"]) return YES;
+    if ([cn containsString:@"TIM"]) return YES;
+    if ([cn hasPrefix:@"IESMulti"]) return YES;
+    if ([cn hasPrefix:@"IESLive"]) return YES;
+    if ([cn hasPrefix:@"IESIM"]) return YES;
+    return NO;
 }
-@end
-
-static void ypd_diag_hook_all(Class cls, NSString *className) {
-    unsigned int count;
-    Method *methods = class_copyMethodList(cls, &count);
-    for (unsigned int i = 0; i < count; i++) {
-        SEL sel = method_getName(methods[i]);
-        NSString *selName = NSStringFromSelector(sel);
-        // Skip init/dealloc/retain/release type methods
-        if ([selName hasPrefix:@"init"] || [selName hasPrefix:@"dealloc"] ||
-            [selName hasPrefix:@"."] || [selName hasPrefix:@"_"] ||
-            [selName isEqualToString:@"class"] || [selName isEqualToString:@"hash"] ||
-            [selName isEqualToString:@"superclass"] || [selName isEqualToString:@"self"] ||
-            [selName hasPrefix:@"retain"] || [selName hasPrefix:@"release"] ||
-            [selName hasPrefix:@"autorelease"] || [selName hasPrefix:@"alloc"] ||
-            [selName hasPrefix:@"copy"] || [selName hasPrefix:@"mutableCopy"] ||
-            [selName hasPrefix:@"new"] || [selName hasPrefix:@"zone"] ||
-            [selName hasPrefix:@"performSelector"] || [selName hasPrefix:@"respondsTo"] ||
-            [selName hasPrefix:@"conformsTo"] || [selName hasPrefix:@"isKindOf"] ||
-            [selName hasPrefix:@"isMemberOf"] || [selName hasPrefix:@"isProxy"] ||
-            [selName hasPrefix:@"methodFor"] || [selName hasPrefix:@"instanceMethod"] ||
-            [selName hasPrefix:@"doesNotRecognize"] || [selName hasPrefix:@"forward"] ||
-            [selName hasPrefix:@"description"] || [selName hasPrefix:@"debugDescription"] ||
-            [selName hasPrefix:@"valueFor"] || [selName hasPrefix:@"setValue"] ||
-            [selName hasPrefix:@"setObservation"] || [selName hasPrefix:@"observation"] ||
-            [selName hasPrefix:@"willChange"] || [selName hasPrefix:@"didChange"] ||
-            [selName hasPrefix:@"observeValue"] || [selName hasPrefix:@"addObserver"] ||
-            [selName hasPrefix:@"removeObserver"]) continue;
-            
-        Method m = class_getInstanceMethod(cls, sel);
-        if (!m) continue;
-        const char *types = method_getTypeEncoding(m);
-        if (types[0] != 'v') continue; // only void for diag logging
-        if ([selName.lowercaseString containsString:@"delete"]) continue; // already covered by Phase2
-        
-        MSHookMessageEx(cls, sel, (IMP)@selector(ypd_diag_log), NULL);
-    }
-    free(methods);
-    ypd_log(@"DIAG_HOOK | %@ | all void methods passthrough-logged", className);
-}
-
-// ---- Phase 2 scanner ----
 
 static void ypd_scan_void_delete() {
     unsigned int classCount;
     Class *classes = objc_copyClassList(&classCount);
     NSMutableSet *hooked = [NSMutableSet set];
     NSUInteger voidCount = 0;
+    NSUInteger classCount2 = 0;
 
     for (unsigned int i = 0; i < classCount; i++) {
         NSString *className = NSStringFromClass(classes[i]);
-        if (![className containsString:@"EIM"] &&
-            ![className containsString:@"Message"] &&
-            ![className containsString:@"Chat"] &&
-            ![className containsString:@"FlowIM"]) continue;
+        if (!ypd_should_scan_class(className)) continue;
+        classCount2++;
 
         unsigned int methodCount;
         Method *methods = class_copyMethodList(classes[i], &methodCount);
@@ -138,47 +99,27 @@ static void ypd_scan_void_delete() {
         free(methods);
     }
     free(classes);
-    ypd_log(@"SCAN | %lu void delete methods BLOCKED", (unsigned long)voidCount);
+    ypd_log(@"SCAN | %lu classes, %lu void delete methods BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
 }
 
 %ctor {
     @autoreleasepool {
         ypd_init_log();
 
-        // Phase 1: AWEIMNewMessageDataController
         Class msgDC = NSClassFromString(@"AWEIMNewMessageDataController");
         if (msgDC) {
-            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessage:sendToServer:completion:"), (IMP)&hook_block_delMsg_sc, NULL);
-            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessage:sendToServer:"), (IMP)&hook_block_delMsg_ss, NULL);
-            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessageInMemory:"), (IMP)&hook_block_delMsgInMem, NULL);
-            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessageInMemory:shouldReload:"), (IMP)&hook_block_delMsgInMem_sr, NULL);
-            MSHookMessageEx(msgDC, NSSelectorFromString(@"batchDeleteMessageIds:"), (IMP)&hook_block_batchDel, NULL);
+            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessage:sendToServer:completion:"), (IMP)&hook_delMsg_sc, NULL);
+            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessage:sendToServer:"), (IMP)&hook_delMsg_ss, NULL);
+            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessageInMemory:"), (IMP)&hook_delMsgInMem, NULL);
+            MSHookMessageEx(msgDC, NSSelectorFromString(@"deleteMessageInMemory:shouldReload:"), (IMP)&hook_delMsgInMem_sr, NULL);
+            MSHookMessageEx(msgDC, NSSelectorFromString(@"batchDeleteMessageIds:"), (IMP)&hook_batchDel, NULL);
             ypd_log(@"P1 | NewMsgDC 5 hooks OK");
         } else {
             ypd_log(@"P1 | NewMsgDC NOT FOUND");
         }
 
-        // Phase 2: scan all void delete methods -> block
         ypd_scan_void_delete();
 
-        // Diagnostic: hook all void methods on key sync classes (passthrough log)
-        NSArray *diagClasses = @[
-            @"TIMXECOMMessageInserter",
-            @"TIMXECOMMessageNewStore",
-            @"IESMultiDeviceMessageDelegate",
-            @"IESLiveScreencastMultiDeviceMessageDelegate",
-            @"TIMXOMessageNotifier",
-            @"TIMXOThirdPartyMessageNotifier",
-        ];
-        for (NSString *cn in diagClasses) {
-            Class cls = NSClassFromString(cn);
-            if (cls) {
-                ypd_diag_hook_all(cls, cn);
-            } else {
-                ypd_log(@"DIAG | %@ NOT FOUND", cn);
-            }
-        }
-
-        ypd_log(@"=== YPD v0.7 init complete ===");
+        ypd_log(@"=== YPD v0.9 init complete ===");
     }
 }
