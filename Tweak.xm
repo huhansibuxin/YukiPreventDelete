@@ -20,12 +20,12 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.12.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.13.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.12 ===");
+    ypd_log(@"=== YPD v0.13 ===");
 }
 
 // ---- Phase 1: AWEIMNewMessageDataController ----
@@ -46,7 +46,7 @@ static void hook_batchDel(id self, SEL _cmd, id arr) {
     ypd_log(@"BLOCK | NewMsgDC | batchDeleteMsgIds: count=%lu", (unsigned long)[arr count]);
 }
 
-// ---- Phase 2: void delete blocker (expanded filter) ----
+// ---- Phase 2: void delete blocker ----
 
 static void ypd_block_void(id self, SEL _cmd) {
     ypd_log(@"BLOCK | %@ | %@", NSStringFromClass([self class]), NSStringFromSelector(_cmd));
@@ -69,29 +69,23 @@ static void ypd_scan_void_delete() {
     unsigned int classCount;
     Class *classes = objc_copyClassList(&classCount);
     NSMutableSet *hooked = [NSMutableSet set];
-    NSUInteger voidCount = 0;
-    NSUInteger classCount2 = 0;
+    NSUInteger voidCount = 0, classCount2 = 0;
 
     for (unsigned int i = 0; i < classCount; i++) {
         NSString *className = NSStringFromClass(classes[i]);
         if (!ypd_should_scan_class(className)) continue;
         classCount2++;
-
         unsigned int methodCount;
         Method *methods = class_copyMethodList(classes[i], &methodCount);
         for (unsigned int j = 0; j < methodCount; j++) {
             SEL sel = method_getName(methods[j]);
             NSString *selName = NSStringFromSelector(sel);
             if (![selName.lowercaseString containsString:@"delete"]) continue;
-
             NSString *key = [NSString stringWithFormat:@"%@|%@", className, selName];
             if ([hooked containsObject:key]) continue;
-            
             Method m = class_getInstanceMethod(classes[i], sel);
             if (!m) continue;
-            const char *types = method_getTypeEncoding(m);
-            if (types[0] != 'v') continue;
-            
+            if (method_getTypeEncoding(m)[0] != 'v') continue;
             [hooked addObject:key];
             MSHookMessageEx(classes[i], sel, (IMP)&ypd_block_void, NULL);
             voidCount++;
@@ -99,29 +93,90 @@ static void ypd_scan_void_delete() {
         free(methods);
     }
     free(classes);
-    ypd_log(@"SCAN | %lu classes, %lu void delete methods BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
+    ypd_log(@"SCAN | %lu classes, %lu void delete BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
 }
 
-// ---- Phase 3: Sync command probe (passthrough logging) ----
+// ---- Phase 3: wide probes (passthrough) ----
 
-static void (*orig_syncHandleCommandMsg)(id, SEL, id, id, int, id, id);
+// TIMXECOMMessageInserter
 
-static void hook_syncHandleCommandMsg(id self, SEL _cmd, id message, id inbox, int reason, id context, id countMap) {
-    NSString *msgType = @"?";
-    if ([message respondsToSelector:@selector(serverMessageType)]) {
-        msgType = [NSString stringWithFormat:@"%@", [message performSelector:@selector(serverMessageType)]];
-    }
-    ypd_log(@"PROBE | syncHandleCommandMsg msgType=%@ reason=%d hasInbox=%d hasContext=%d hasCountMap=%d",
-            msgType, reason, inbox!=nil, context!=nil, countMap!=nil);
-    orig_syncHandleCommandMsg(self, _cmd, message, inbox, reason, context, countMap);
+static void (*orig_syncCmd)(id, SEL, id, id, int, id, id);
+static void hook_syncCmd(id self, SEL _cmd, id msg, id inbox, int reason, id ctx, id cm) {
+    NSString *t = [msg respondsToSelector:@selector(serverMessageType)] 
+        ? [NSString stringWithFormat:@"%@", [msg performSelector:@selector(serverMessageType)]] : @"?";
+    ypd_log(@"PROBE | Inserter.syncHandleCommand msgType=%@ reason=%d", t, reason);
+    orig_syncCmd(self, _cmd, msg, inbox, reason, ctx, cm);
 }
 
-static void ypd_hook_sync_command() {
+static void (*orig_handleCmd)(id, SEL, id, id, int, id);
+static void hook_handleCmd(id self, SEL _cmd, id msg, id inbox, int reason, id ctx) {
+    NSString *t = [msg respondsToSelector:@selector(serverMessageType)]
+        ? [NSString stringWithFormat:@"%@", [msg performSelector:@selector(serverMessageType)]] : @"?";
+    ypd_log(@"PROBE | Inserter.handleCommand msgType=%@ reason=%d", t, reason);
+    orig_handleCmd(self, _cmd, msg, inbox, reason, ctx);
+}
+
+static void (*orig_syncInsert)(id, SEL, id, id, id, int, id);
+static void hook_syncInsert(id self, SEL _cmd, id msgs, id extra, id inbox, int reason, id ctx) {
+    ypd_log(@"PROBE | Inserter.syncInsertMessages reason=%d count=%lu", reason, (unsigned long)[msgs count]);
+    orig_syncInsert(self, _cmd, msgs, extra, inbox, reason, ctx);
+}
+
+// TIMXNewMessageStore
+
+static void (*orig_clearConv)(id, SEL, id, id, id);
+static void hook_clearConv(id self, SEL _cmd, id convId, id orderIdx, id comp) {
+    ypd_log(@"PROBE | Store.clearMessagesInConv convId=%@", convId);
+    orig_clearConv(self, _cmd, convId, orderIdx, comp);
+}
+
+static void (*orig_clearConv2)(id, SEL, id, id, id);
+static void hook_clearConv2(id self, SEL _cmd, id conv, id sortBlock, id comp) {
+    ypd_log(@"PROBE | Store.clearMessagesWithConv conv=%@", conv);
+    orig_clearConv2(self, _cmd, conv, sortBlock, comp);
+}
+
+static void (*orig_delByConvIds)(id, SEL, id, id);
+static void hook_delByConvIds(id self, SEL _cmd, id convIds, id comp) {
+    ypd_log(@"PROBE | Store.deleteMessagesByConvIds convCount=%lu", (unsigned long)[convIds count]);
+    orig_delByConvIds(self, _cmd, convIds, comp);
+}
+
+static void (*orig_delByMsgIds)(id, SEL, id, id);
+static void hook_delByMsgIds(id self, SEL _cmd, id msgIds, id comp) {
+    ypd_log(@"PROBE | Store.deleteMessagesByMsgIds msgCount=%lu", (unsigned long)[msgIds count]);
+    orig_delByMsgIds(self, _cmd, msgIds, comp);
+}
+
+static void ypd_hook_probes() {
     Class inserter = NSClassFromString(@"TIMXECOMMessageInserter");
-    if (!inserter) { ypd_log(@"PROBE | TIMXECOMMessageInserter NOT FOUND"); return; }
-    SEL sel = NSSelectorFromString(@"syncHandleCommandMessage:inInbox:reason:context:countMap:");
-    MSHookMessageEx(inserter, sel, (IMP)&hook_syncHandleCommandMsg, (IMP*)&orig_syncHandleCommandMsg);
-    ypd_log(@"PROBE | syncHandleCommandMessage HOOKED (passthrough)");
+    Class store = NSClassFromString(@"TIMXNewMessageStore");
+
+    if (inserter) {
+        MSHookMessageEx(inserter, NSSelectorFromString(@"syncHandleCommandMessage:inInbox:reason:context:countMap:"),
+                        (IMP)&hook_syncCmd, (IMP*)&orig_syncCmd);
+        MSHookMessageEx(inserter, NSSelectorFromString(@"handleCommandMessage:inInbox:reason:context:"),
+                        (IMP)&hook_handleCmd, (IMP*)&orig_handleCmd);
+        MSHookMessageEx(inserter, NSSelectorFromString(@"syncInsertMessages:conversationExtraMap:inInbox:reason:context:"),
+                        (IMP)&hook_syncInsert, (IMP*)&orig_syncInsert);
+        ypd_log(@"P3 | Inserter 3 probes OK");
+    } else {
+        ypd_log(@"P3 | Inserter NOT FOUND");
+    }
+
+    if (store) {
+        MSHookMessageEx(store, NSSelectorFromString(@"clearMessagesInConversation:beforeOrderIndex:completion:"),
+                        (IMP)&hook_clearConv, (IMP*)&orig_clearConv);
+        MSHookMessageEx(store, NSSelectorFromString(@"clearMessagesWithConversation:calculateSortTimeBlock:completion:"),
+                        (IMP)&hook_clearConv2, (IMP*)&orig_clearConv2);
+        MSHookMessageEx(store, NSSelectorFromString(@"deleteMessagesByConvIds:completion:"),
+                        (IMP)&hook_delByConvIds, (IMP*)&orig_delByConvIds);
+        MSHookMessageEx(store, NSSelectorFromString(@"deleteMessagesByMsgIds:completion:"),
+                        (IMP)&hook_delByMsgIds, (IMP*)&orig_delByMsgIds);
+        ypd_log(@"P3 | Store 4 probes OK");
+    } else {
+        ypd_log(@"P3 | Store NOT FOUND");
+    }
 }
 
 %ctor {
@@ -142,8 +197,8 @@ static void ypd_hook_sync_command() {
         }
 
         ypd_scan_void_delete();
-        ypd_hook_sync_command();
+        ypd_hook_probes();
 
-        ypd_log(@"=== YPD v0.12 init complete ===");
+        ypd_log(@"=== YPD v0.13 init complete ===");
     }
 }
