@@ -9,8 +9,6 @@ TWEAK_NAME = YukiPreventDelete
 YukiPreventDelete_FILES = Tweak.xm
 YukiPreventDelete_CFLAGS = -fobjc-arc -w
 YukiPreventDelete_FRAMEWORKS = Foundation UIKit
-YukiPreventDelete_LDFLAGS = -lsqlite3
-
 DYYY_LOGOS_DEFAULT_GENERATOR = internal
 
 export THEOS_STRICT_LOGOS = 0
