@@ -20,16 +20,15 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.17.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.18.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.17 ===");
+    ypd_log(@"=== YPD v0.18 ===");
 }
 
 // ---- Phase 1 ----
-
 static void hook_delMsg_sc(id self, SEL _cmd, id msg, BOOL send, id comp) {}
 static void hook_delMsg_ss(id self, SEL _cmd, id msg, BOOL send) {}
 static void hook_delMsgInMem(id self, SEL _cmd, id msg) {}
@@ -37,7 +36,6 @@ static void hook_delMsgInMem_sr(id self, SEL _cmd, id msg, BOOL reload) {}
 static void hook_batchDel(id self, SEL _cmd, id arr) {}
 
 // ---- Phase 2 ----
-
 static void ypd_block_void(id self, SEL _cmd) {}
 
 static BOOL ypd_should_scan_class(NSString *cn) {
@@ -83,7 +81,7 @@ static void ypd_scan_void_delete() {
     ypd_log(@"SCAN | %lu classes, %lu BLOCKED", (unsigned long)classCount2, (unsigned long)voidCount);
 }
 
-// ---- Phase 3: DB snapshot + restore with WCDB reopen (diagnostic dump) ----
+// ---- Phase 3: DB snapshot + restore + WCDB dump ----
 
 static NSString *g_backupDir;
 static NSString *g_imDir;
@@ -122,55 +120,95 @@ static void ypd_restore_files() {
     ypd_log(@"RESTORE | %lu files", (unsigned long)count);
 }
 
-// Dump all ivars/properties of the handler to find store reference
-static void ypd_dump_handler_props(id handler) {
-    ypd_log(@"DUMP | handler class: %@", NSStringFromClass([handler class]));
-    
+// Dump store ivars to find WCDB database objects
+static void ypd_dump_store_props(id store) {
+    if (!store) { ypd_log(@"STORE_DUMP | store is nil!"); return; }
+    ypd_log(@"STORE_DUMP | %@: %@", NSStringFromClass([store class]), store);
+
     unsigned int ivarCount;
-    Ivar *ivars = class_copyIvarList([handler class], &ivarCount);
+    Ivar *ivars = class_copyIvarList([store class], &ivarCount);
     for (unsigned int i = 0; i < ivarCount; i++) {
         const char *name = ivar_getName(ivars[i]);
         const char *type = ivar_getTypeEncoding(ivars[i]);
         NSString *typeStr = type ? @(type) : @"?";
-        // Only log interesting types: objects and classes
-        if ([typeStr containsString:@"@"] || [typeStr containsString:@"#"]) {
-            @try {
-                id val = object_getIvar(handler, ivars[i]);
-                if (val) {
-                    ypd_log(@"DUMP | ivar %s = %@ (%@)", name, val, NSStringFromClass([val class]));
-                }
-            } @catch (NSException *e) {}
+        @try {
+            id val = object_getIvar(store, ivars[i]);
+            if (val) {
+                ypd_log(@"STORE_DUMP | ivar %s = %@ (%@)", name, val, NSStringFromClass([val class]));
+            } else {
+                // also try to get non-object interesting ivars
+            }
+        } @catch (NSException *e) {
+            ypd_log(@"STORE_DUMP | ivar %s EXCEPTION: %@", name, e);
         }
     }
     free(ivars);
-    
-    // Also try common KVC keys that might lead to store/db
-    for (NSString *key in @[@"messageStore", @"store", @"db", @"database", @"msgStore",
-                             @"timStore", @"imStore", @"dataStore", @"messageManager"]) {
+}
+
+static void ypd_close_and_reopen_store(id handler) {
+    id store = nil;
+    @try { store = [handler valueForKey:@"db"]; } @catch (...) {}
+
+    if (!store) {
+        ypd_log(@"REOPEN | store is nil!");
+        return;
+    }
+
+    // First time, dump store ivars
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        ypd_dump_store_props(store);
+    });
+
+    // Try KVC to find WCDB database: database / wctDatabase / handle / db
+    id wctDB = nil;
+    for (NSString *k in @[@"database", @"db", @"wctDatabase", @"handle", @"wctHandle", @"sqliteDB",
+                           @"messageDB", @"wcdb"]) {
         @try {
-            id val = [handler valueForKey:key];
-            if (val) {
-                ypd_log(@"DUMP | KVC %@ = %@ (%@)", key, val, NSStringFromClass([val class]));
+            id v = [store valueForKey:k];
+            if (v) {
+                ypd_log(@"REOPEN | store.%@ = %@ (%@)", k, v, NSStringFromClass([v class]));
+                if (!wctDB) wctDB = v;
             }
-        } @catch (NSException *e) {}
+        } @catch (...) {}
+    }
+
+    if (!wctDB) {
+        ypd_log(@"REOPEN | no WCDB object found on store");
+        return;
+    }
+
+    // Try close
+    @try {
+        [wctDB close];
+        ypd_log(@"REOPEN | [%@ close] OK", NSStringFromClass([wctDB class]));
+    } @catch (NSException *e) {
+        ypd_log(@"REOPEN | close EXCEPTION: %@", e);
+    }
+
+    [NSThread sleepForTimeInterval:0.3];
+
+    // Try reopen / open
+    @try {
+        if ([wctDB respondsToSelector:@selector(open)]) {
+            [wctDB performSelector:@selector(open)];
+            ypd_log(@"REOPEN | [%@ open] OK", NSStringFromClass([wctDB class]));
+        }
+    } @catch (NSException *e) {
+        ypd_log(@"REOPEN | open EXCEPTION: %@", e);
     }
 }
 
 static void (*orig_handleDelConv)(id, SEL, id);
 static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
-    ypd_log(@"TRIGGER | handleDeleteConversationWithContext");
-    
-    // First time, dump handler properties
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        ypd_dump_handler_props(self);
-    });
-    
-    if (g_restoring) { ypd_log(@"TRIGGER | already restoring, skip"); return; }
+    ypd_log(@"TRIGGER");
+
+    if (g_restoring) { ypd_log(@"TRIGGER | skip (restoring)"); return; }
     g_restoring = YES;
-    
+
     ypd_restore_files();
-    
+    ypd_close_and_reopen_store(self);
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ypdMessageReload" object:nil];
         g_restoring = NO;
@@ -179,15 +217,6 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
             ypd_backup_db();
         });
     });
-}
-
-static void ypd_setup_restore() {
-    Class handler = NSClassFromString(@"TIMXCommandMessageHandler");
-    if (handler) {
-        MSHookMessageEx(handler, NSSelectorFromString(@"handleDeleteConversationWithContext:"),
-                        (IMP)&hook_handleDelConv, (IMP*)&orig_handleDelConv);
-        ypd_log(@"P3 | trigger HOOKED");
-    }
 }
 
 %ctor {
@@ -214,8 +243,13 @@ static void ypd_setup_restore() {
             ypd_backup_db();
         });
 
-        ypd_setup_restore();
+        Class handler = NSClassFromString(@"TIMXCommandMessageHandler");
+        if (handler) {
+            MSHookMessageEx(handler, NSSelectorFromString(@"handleDeleteConversationWithContext:"),
+                            (IMP)&hook_handleDelConv, (IMP*)&orig_handleDelConv);
+            ypd_log(@"P3 | trigger HOOKED");
+        }
 
-        ypd_log(@"=== YPD v0.17 init complete ===");
+        ypd_log(@"=== YPD v0.18 init complete ===");
     }
 }
