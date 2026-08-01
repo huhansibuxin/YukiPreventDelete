@@ -130,7 +130,6 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
     g_restoring = YES;
 
     ypd_restore_files();
-    ypd_fix_deleted();
 
     id store = nil;
     @try { store = [self valueForKey:@"db"]; } @catch (NSException *e) {
@@ -138,7 +137,9 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
     }
     ypd_clear_store_cache(store);
 
+    // 延迟：等 WCDB 执行完 SET deleted=1 后再 SET deleted=0
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        ypd_fix_deleted();
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ypdMessageReload" object:nil];
         g_restoring = NO;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
