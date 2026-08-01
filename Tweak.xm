@@ -5,6 +5,7 @@
 static NSString *g_logPath;
 static NSFileHandle *g_logHandle;
 static NSLock *g_logLock;
+static NSString *g_imDir = nil;
 
 static void ypd_log(NSString *fmt, ...) {
     va_list args;
@@ -30,7 +31,7 @@ static void ypd_init_log(void) {
 
 static void *g_libsqlite3 = NULL;
 static int (*g_sqlite3_open)(const char *, void **) = NULL;
-static int (*g_sqlite3_exec)(void *, const char *, int, void *, void **) = NULL;
+static int (*g_sqlite3_exec)(void *, const char *, int, void *, char **) = NULL;
 static int (*g_sqlite3_close)(void *) = NULL;
 static const char *(*g_sqlite3_errmsg)(void *) = NULL;
 
@@ -38,10 +39,10 @@ static void ypd_init_sqlite3(void) {
     if (g_libsqlite3) return;
     g_libsqlite3 = dlopen("/usr/lib/libsqlite3.dylib", RTLD_NOW);
     if (!g_libsqlite3) { ypd_log(@"SQLITE | dlopen failed"); return; }
-    g_sqlite3_open = dlsym(g_libsqlite3, "sqlite3_open");
-    g_sqlite3_exec = dlsym(g_libsqlite3, "sqlite3_exec");
-    g_sqlite3_close = dlsym(g_libsqlite3, "sqlite3_close");
-    g_sqlite3_errmsg = dlsym(g_libsqlite3, "sqlite3_errmsg");
+    g_sqlite3_open = (typeof(g_sqlite3_open))dlsym(g_libsqlite3, "sqlite3_open");
+    g_sqlite3_exec = (typeof(g_sqlite3_exec))dlsym(g_libsqlite3, "sqlite3_exec");
+    g_sqlite3_close = (typeof(g_sqlite3_close))dlsym(g_libsqlite3, "sqlite3_close");
+    g_sqlite3_errmsg = (typeof(g_sqlite3_errmsg))dlsym(g_libsqlite3, "sqlite3_errmsg");
     ypd_log(@"SQLITE | symbols OK");
 }
 
@@ -71,7 +72,6 @@ static void ypd_fix_deleted(void) {
 }
 
 static NSString *g_backupDir;
-static NSString *g_imDir;
 static BOOL g_restoring = NO;
 
 static void ypd_backup_db(void) {
