@@ -1,68 +1,48 @@
 #import <Foundation/Foundation.h>
 #import <substrate.h>
+#import <objc/runtime.h>
 
-#pragma mark - AWEIMNewMessageDataController delete hooks
+static NSMutableSet *hookedSelectors;
 
-static void (*orig_deleteMessage_sendToServer_completion)(id, SEL, id, BOOL, id);
-static void (*orig_deleteMessage_sendToServer)(id, SEL, id, BOOL);
-static void (*orig_deleteMessageInMemory)(id, SEL, id);
-static void (*orig_deleteMessageInMemory_shouldReload)(id, SEL, id, BOOL);
-static void (*orig_batchDeleteMessageIds)(id, SEL, id);
-
-static void hook_deleteMessage_sendToServer_completion(id self, SEL _cmd, id message, BOOL sendToServer, id completion) {
-    NSLog(@"[YPD] BLOCKED deleteMessage:sendToServer:completion: message=%@ sendToServer=%d", message, sendToServer);
-}
-
-static void hook_deleteMessage_sendToServer(id self, SEL _cmd, id message, BOOL sendToServer) {
-    NSLog(@"[YPD] BLOCKED deleteMessage:sendToServer: message=%@ sendToServer=%d", message, sendToServer);
-}
-
-static void hook_deleteMessageInMemory(id self, SEL _cmd, id message) {
-    NSLog(@"[YPD] BLOCKED deleteMessageInMemory: message=%@", message);
-}
-
-static void hook_deleteMessageInMemory_shouldReload(id self, SEL _cmd, id message, BOOL shouldReload) {
-    NSLog(@"[YPD] BLOCKED deleteMessageInMemory:shouldReload: message=%@ shouldReload=%d", message, shouldReload);
-}
-
-static void hook_batchDeleteMessageIds(id self, SEL _cmd, id messageArray) {
-    NSLog(@"[YPD] BLOCKED batchDeleteMessageIds: count=%lu", (unsigned long)[messageArray count]);
+static void ypd_generic_block(id self, SEL _cmd) {
+    NSLog(@"[YPD] BLOCKED %@ %@", NSStringFromClass([self class]), NSStringFromSelector(_cmd));
 }
 
 %ctor {
     @autoreleasepool {
-        Class cls = NSClassFromString(@"AWEIMNewMessageDataController");
-        if (!cls) {
-            NSLog(@"[YPD] ERROR: AWEIMNewMessageDataController class not found");
-            return;
+        hookedSelectors = [NSMutableSet set];
+        unsigned int classCount;
+        Class *classes = objc_copyClassList(&classCount);
+
+        for (unsigned int i = 0; i < classCount; i++) {
+            NSString *className = NSStringFromClass(classes[i]);
+            if (![className containsString:@"EIM"] &&
+                ![className containsString:@"Message"] &&
+                ![className containsString:@"Chat"] &&
+                ![className containsString:@"FlowIM"]) continue;
+
+            unsigned int methodCount;
+            Method *methods = class_copyMethodList(classes[i], &methodCount);
+            for (unsigned int j = 0; j < methodCount; j++) {
+                SEL sel = method_getName(methods[j]);
+                NSString *selName = NSStringFromSelector(sel);
+                if (![selName.lowercaseString containsString:@"delete"]) continue;
+
+                NSString *key = [NSString stringWithFormat:@"%@_%@", className, selName];
+                if ([hookedSelectors containsObject:key]) continue;
+                [hookedSelectors addObject:key];
+
+                IMP imp = class_getMethodImplementation(classes[i], sel);
+                // Only hook if the method is implemented (not inherited from NSObject)
+                Method m = class_getInstanceMethod(classes[i], sel);
+                if (!m) continue;
+
+                NSLog(@"[YPD] HOOKING: %@ %@", className, selName);
+                MSHookMessageEx(classes[i], sel, (IMP)&ypd_generic_block, NULL);
+            }
+            free(methods);
         }
-        NSLog(@"[YPD] Found AWEIMNewMessageDataController, installing hooks...");
-
-        MSHookMessageEx(cls,
-            NSSelectorFromString(@"deleteMessage:sendToServer:completion:"),
-            (IMP)&hook_deleteMessage_sendToServer_completion,
-            (IMP*)&orig_deleteMessage_sendToServer_completion);
-
-        MSHookMessageEx(cls,
-            NSSelectorFromString(@"deleteMessage:sendToServer:"),
-            (IMP)&hook_deleteMessage_sendToServer,
-            (IMP*)&orig_deleteMessage_sendToServer);
-
-        MSHookMessageEx(cls,
-            NSSelectorFromString(@"deleteMessageInMemory:"),
-            (IMP)&hook_deleteMessageInMemory,
-            (IMP*)&orig_deleteMessageInMemory);
-
-        MSHookMessageEx(cls,
-            NSSelectorFromString(@"deleteMessageInMemory:shouldReload:"),
-            (IMP)&hook_deleteMessageInMemory_shouldReload,
-            (IMP*)&orig_deleteMessageInMemory_shouldReload);
-
-        MSHookMessageEx(cls,
-            NSSelectorFromString(@"batchDeleteMessageIds:"),
-            (IMP)&hook_batchDeleteMessageIds,
-            (IMP*)&orig_batchDeleteMessageIds);
-
-        NSLog(@"[YPD] All 5 delete hooks installed on AWEIMNewMessageDataController");
+        free(classes);
+        NSLog(@"[YPD] Total delete methods hooked: %lu", (unsigned long)hookedSelectors.count);
     }
 }
