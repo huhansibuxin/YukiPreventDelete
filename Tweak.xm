@@ -23,8 +23,8 @@ static inline BOOL YPD_PreventRemoteDelete(void) {
 
 // ── LOCAL DELETE FLAG ──
 // 本端主动删除时设置标记，放行本端操作，拦截远端推送
+// TODO: 后续版本由 AWEIMMessageListActionDeleteInterface hook 来设置此标记
 static BOOL YPD_IsLocalDeleteInProgress = NO;
-static NSInteger YPD_LocalDeleteGuardCounter = 0;
 
 // ── SAVED IMPS ──
 static IMP YPD_Orig_MsgDeleted = NULL;
@@ -107,22 +107,8 @@ static void YPD_FindAndHookDelegateClass(void)
     }
 }
 
-// ──────────────────────────────────────────────
-//  本端删除标记：安全网自动清除
-// ──────────────────────────────────────────────
-
-static void YPD_SetLocalDeleteFlag(void) {
-    YPD_IsLocalDeleteInProgress = YES;
-    YPD_LocalDeleteGuardCounter++;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        YPD_LocalDeleteGuardCounter--;
-        if (YPD_LocalDeleteGuardCounter <= 0) {
-            YPD_IsLocalDeleteInProgress = NO;
-            YPD_LocalDeleteGuardCounter = 0;
-        }
-    });
-}
+// TODO: 后续版本通过 hook AWEIMMessageListActionDeleteInterface 调用入口
+// 在删除操作前调 YPD_IsLocalDeleteInProgress = YES + dispatch_after 自动清除
 
 // ──────────────────────────────────────────────
 //  %ctor
