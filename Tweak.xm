@@ -20,12 +20,12 @@ static void ypd_log(NSString *fmt, ...) {
 
 static void ypd_init_log() {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.19.log"];
+    g_logPath = [paths[0] stringByAppendingPathComponent:@"ypd_v0.20.log"];
     [[NSFileManager defaultManager] createFileAtPath:g_logPath contents:nil attributes:nil];
     g_logHandle = [NSFileHandle fileHandleForWritingAtPath:g_logPath];
     [g_logHandle seekToEndOfFile];
     g_logLock = [[NSLock alloc] init];
-    ypd_log(@"=== YPD v0.19 ===");
+    ypd_log(@"=== YPD v0.20 ===");
 }
 
 // ---- Phase 1 ----
@@ -118,45 +118,43 @@ static void ypd_restore_files() {
     ypd_log(@"RESTORE | %lu files", (unsigned long)count);
 }
 
-static void ypd_reopen_store(id store) {
-    if (!store) { ypd_log(@"REOPEN | store nil"); return; }
+static void ypd_clear_store_cache(id store) {
+    if (!store) { ypd_log(@"CACHE | store nil"); return; }
 
-    // KVC probe: find WCDB database object
-    id wctDB = nil;
-    for (NSString *k in @[@"database", @"db", @"wctDatabase", @"handle", @"wctHandle",
-                           @"messageDB", @"wcdb", @"_database", @"_db", @"_wctDatabase"]) {
+    // Method 1: cleanDatabaseCache
+    SEL cacheSel = NSSelectorFromString(@"dbDouYin_cleanDatabaseCache");
+    if ([store respondsToSelector:cacheSel]) {
         @try {
-            id v = [store valueForKey:k];
-            if (v) {
-                ypd_log(@"REOPEN | store.%@ = %@ (%@)", k, v, NSStringFromClass([v class]));
-                if (!wctDB) wctDB = v;
-            }
+            [store performSelector:cacheSel];
+            ypd_log(@"CACHE | cleanDatabaseCache OK");
         } @catch (NSException *e) {
-            ypd_log(@"REOPEN | store.%@ EXCEPTION: %@", k, e);
+            ypd_log(@"CACHE | cleanDatabaseCache EXCEPTION: %@", e);
+        }
+    } else {
+        ypd_log(@"CACHE | cleanDatabaseCache not found");
+    }
+
+    // Method 2: closeDatabaseForUser:completion: — close all connections
+    SEL closeSel = NSSelectorFromString(@"dbDouYin_closeDatabaseForUser:completion:");
+    if ([store respondsToSelector:closeSel]) {
+        @try {
+            // Try with current user ID or empty
+            [store performSelector:closeSel withObject:@(0) withObject:nil];
+            ypd_log(@"CACHE | closeDatabaseForUser OK");
+        } @catch (NSException *e) {
+            ypd_log(@"CACHE | closeDatabaseForUser EXCEPTION: %@", e);
         }
     }
 
-    if (!wctDB) {
-        ypd_log(@"REOPEN | no WCDB object");
-        return;
-    }
-
-    @try {
-        [wctDB close];
-        ypd_log(@"REOPEN | close OK");
-    } @catch (NSException *e) {
-        ypd_log(@"REOPEN | close EXCEPTION: %@", e);
-    }
-
-    [NSThread sleepForTimeInterval:0.3];
-
-    @try {
-        if ([wctDB respondsToSelector:@selector(open)]) {
-            [wctDB performSelector:@selector(open)];
-            ypd_log(@"REOPEN | open OK");
+    // Method 3: setupDatabaseWithUserID: — reinit
+    SEL setupSel = NSSelectorFromString(@"dbDouYin_setupDatabaseWithUserID:");
+    if ([store respondsToSelector:setupSel]) {
+        @try {
+            [store performSelector:setupSel withObject:@(0)];
+            ypd_log(@"CACHE | setupDatabase OK");
+        } @catch (NSException *e) {
+            ypd_log(@"CACHE | setupDatabase EXCEPTION: %@", e);
         }
-    } @catch (NSException *e) {
-        ypd_log(@"REOPEN | open EXCEPTION: %@", e);
     }
 }
 
@@ -170,9 +168,9 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
 
     id store = nil;
     @try { store = [self valueForKey:@"db"]; } @catch (NSException *e) {
-        ypd_log(@"REOPEN | self.db EXCEPTION: %@", e);
+        ypd_log(@"TRIGGER | self.db EXCEPTION: %@", e);
     }
-    ypd_reopen_store(store);
+    ypd_clear_store_cache(store);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ypdMessageReload" object:nil];
@@ -214,6 +212,6 @@ static void hook_handleDelConv(id self, SEL _cmd, id ctx) {
             ypd_log(@"P3 | trigger HOOKED");
         }
 
-        ypd_log(@"=== YPD v0.19 init complete ===");
+        ypd_log(@"=== YPD v0.20 init complete ===");
     }
 }
