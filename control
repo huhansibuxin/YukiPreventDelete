@@ -1,0 +1,9 @@
+Package: com.vita.yukipreventdelete
+Name: YukiPreventDelete
+Version: 0.1-0
+Architecture: iphoneos-arm
+Description: Prevent remote message deletion in Douyin (Aweme). When another device deletes chat messages, this tweak keeps them on the local device.
+Maintainer: vita
+Author: vita
+Section: Tweaks
+Depends: mobilesubstrate, preferenceloader

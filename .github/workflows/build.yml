@@ -1,0 +1,39 @@
+name: Build YukiPreventDelete
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Theos
+      run: |
+        git clone --depth 1 https://github.com/theos/theos.git ${{ runner.temp }}/theos
+        echo "THEOS=${{ runner.temp }}/theos" >> $GITHUB_ENV
+
+    - name: Install Dependencies
+      run: |
+        brew install dpkg ldid
+
+    - name: Fix Perl Shebang
+      run: |
+        find "${{ runner.temp }}/theos" -type f -name "*.pl" -exec sed -i '' '1s|^#!.*/perl$|#!/usr/bin/perl|' {} \;
+
+    - name: Make Package
+      run: |
+        make clean package
+      env:
+        THEOS_PACKAGE_SCHEME: rootless
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: YukiPreventDelete-deb
+        path: packages/*.deb
