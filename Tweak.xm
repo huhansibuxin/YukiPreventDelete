@@ -70,7 +70,9 @@ static void ypd_scan_void_delete() {
             if ([hooked containsObject:key]) continue;
             Method m = class_getInstanceMethod(classes[i], sel);
             if (!m) continue;
-            if (method_getTypeEncoding(m)[0] != 'v') continue;
+            const char *types = method_getTypeEncoding(m);
+            if (!types) continue;
+            if (types[0] != 'v') continue;
             [hooked addObject:key];
             MSHookMessageEx(classes[i], sel, (IMP)&ypd_block_void, NULL);
             voidCount++;
